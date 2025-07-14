@@ -1,37 +1,120 @@
 from ursina import *
-from random import uniform
+from ursina.prefabs.first_person_controller import FirstPersonController
+
+# --- Classes do Jogo ---
+
+class Inimigo(Entity):
+    """
+    Classe para representar os inimigos do jogo.
+    Herda de Entity e controla seu próprio comportamento e vida.
+    """
+    def __init__(self, position=(0, 0, 0)):
+        super().__init__(
+            model='cube',
+            color=color.magenta,
+            position=position,
+            collider='box',
+            scale_y=2
+        )
+        self.vida = 100
+        self.velocidade = 2
+
+    def update(self):
+        # Para de se mover se a vida acabar
+        if self.vida <= 0:
+            return
+
+        # Segue o jogador
+        try:
+            direcao = (jogador.position - self.position).normalized()
+            self.position += direcao * time.dt * self.velocidade
+            self.look_at(jogador) # Faz o inimigo "olhar" para o jogador
+
+            # Verifica colisão com o jogador
+            if self.intersects(jogador).hit:
+                jogador.sofrer_dano(20 * time.dt)
+        except Exception:
+            # Caso o jogador seja destruído, para de tentar encontrá-lo
+            pass
+
+class Jogador(FirstPersonController):
+    """
+    Classe para o jogador, herdando o controle de primeira pessoa.
+    Gerencia a vida, a pontuação e as ações do jogador.
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.vida = 100
+        self.itens_coletados = 0
+        self.cooldown_tiro = 0.4
+        self._tempo_ultimo_tiro = 0
+
+        # Ativa a gravidade para o jogador
+        self.gravity = 1
+
+    def sofrer_dano(self, quantidade):
+        self.vida -= quantidade
+        if self.vida <= 0:
+            self.vida = 0
+            game_over()
+
+    def coletar_item(self):
+        self.itens_coletados += 1
+
+    def input(self, key):
+        # Ação de atirar com o mouse
+        if key == 'left mouse down':
+            if time.time() - self._tempo_ultimo_tiro > self.cooldown_tiro:
+                self._tempo_ultimo_tiro = time.time()
+                Tiro(
+                    position=self.world_position + Vec3(0, 1.5, 0) + self.camera_pivot.forward * 1.5,
+                    rotation=self.camera_pivot.world_rotation
+                )
+        # Sair do jogo
+        if key == 'escape':
+            application.quit()
+
+class Tiro(Entity):
+    """
+    Classe para os projéteis disparados pelo jogador.
+    """
+    def __init__(self, **kwargs):
+        super().__init__(model='sphere', color=color.red, scale=0.2, **kwargs)
+        self.collider = 'box'
+
+    def update(self):
+        # Movimenta o tiro para frente
+        self.position += self.forward * time.dt * 20
+
+        # Verifica colisão com inimigos
+        hit_info = self.intersects()
+        if hit_info.hit:
+            if isinstance(hit_info.entity, Inimigo):
+                hit_info.entity.vida -= 50 # Causa 50 de dano
+                if hit_info.entity.vida <= 0:
+                    destroy(hit_info.entity)
+                destroy(self) # Destrói o tiro ao atingir
+
+        # Destrói o tiro se ele se afastar muito
+        if distance_xz(self, jogador) > 50:
+            destroy(self)
+
+# --- Configuração Inicial do Jogo ---
 
 app = Ursina()
 
-# === Variáveis ===
-vida = 100
-itens_coletados = 0
-inimigos = []
-tiros = []
-porta_aberta = []
-
-# === Jogador ===
-player = Entity(model='cube', color=color.azure, position=(1,1,1), scale=(1,2,1), collider='box')
-camera.parent = player
-camera.position = (0, 1.5, -4)
-camera.rotation = (0, 0, 0)
-mouse.locked = True
-
-# === Terreno ===
-chao = Entity(model='plane', texture='white_cube', scale=(32,1,32), texture_scale=(32,32), collider='box', color=color.dark_gray)
-
-# === Mapa com paredes, portas, itens, inimigos ===
+# Mapa do jogo
 mapa = [
     "################",
     "#.............D#",
-    "#..####........#",
+    "#..####...E....#",
     "#..............#",
     "#.......########",
     "#..............#",
     "###............#",
     "#..............#",
     "#...*...##.....#",
-    "#.......##.....#",
+    "#.......##.E...#",
     "#..............#",
     "####...........#",
     "#..............#",
@@ -40,102 +123,61 @@ mapa = [
     "################"
 ]
 
-# === Constrói o mundo ===
-for y, linha in enumerate(mapa):
+# Geração do mundo a partir do mapa
+for z, linha in enumerate(mapa):
     for x, char in enumerate(linha):
-        pos = Vec3(x, 0.5, y)
+        pos = (x, 1, z)
         if char == '#':
-            Entity(model='cube', color=color.gray, position=pos, collider='box', scale_y=2)
+            Entity(model='cube', color=color.gray, position=pos, scale=(1, 2, 1), collider='cube', texture='brick')
         elif char == 'D':
-            e = Entity(model='cube', color=color.orange, position=pos, collider='box', scale_y=2, name='porta')
-            porta_aberta.append(e)
+            Entity(model='cube', color=color.orange, position=pos, scale=(1, 2, 1), collider='cube', name='porta')
         elif char == '*':
-            Entity(model='sphere', color=color.yellow, position=pos + Vec3(0,0.5,0), scale=0.4, name='item', collider='box')
+            Entity(model='sphere', color=color.yellow, position=(x, 1.5, z), scale=0.4, name='item', collider='sphere')
         elif char == 'E':
-            inimigo = Entity(model='cube', color=color.magenta, position=pos + Vec3(0,0.5,0), collider='box', scale=1.2)
-            inimigos.append(inimigo)
+            Inimigo(position=(x, 1, z))
 
-# Adiciona dois inimigos manualmente
-for pos in [(5.5,5.5), (10.5,12.5)]:
-    inimigo = Entity(model='cube', color=color.magenta, position=(pos[0], 0.5, pos[1]), collider='box', scale=1.2)
-    inimigos.append(inimigo)
+# Entidades do ambiente
+chao = Entity(model='plane', scale=(len(mapa[0]), 1, len(mapa)), texture='grass', collider='box')
 
-# === HUD ===
-vida_texto = Text(text=f"Vida: {int(vida)}", position=window.top_left + Vec2(0.02,-0.02), scale=1.2, origin=(0,0))
-item_texto = Text(text=f"Itens: {itens_coletados}", position=window.top_left + Vec2(0.02,-0.07), scale=1.2, origin=(0,0))
-game_over_text = Text(text='GAME OVER', scale=3, color=color.red, origin=(0,0), enabled=False)
+# Instância do jogador usando a classe
+jogador = Jogador(position=(2, 2, 2))
 
-# === Função de disparo ===
-def atirar():
-    global tiros
-    tiro = Entity(model='cube', color=color.red, scale=0.1, position=player.world_position + camera.forward * 1.5)
-    tiro.direction = camera.forward
-    tiros.append(tiro)
+# --- Interface do Usuário (HUD) ---
 
-# === Atualização do jogo ===
+vida_texto = Text(text=f"Vida: {int(jogador.vida)}", position=window.top_left + Vec2(0.05, -0.05), scale=1.5)
+item_texto = Text(text=f"Itens: {jogador.itens_coletados}", position=window.top_left + Vec2(0.05, -0.10), scale=1.5)
+mira = Entity(model='quad', parent=camera.ui, scale=0.015, color=color.white, texture='circle')
+
+# --- Funções de Lógica do Jogo ---
+
 def update():
-    global vida, itens_coletados
+    """
+    Função principal de atualização, chamada a cada frame.
+    """
+    # Atualiza a HUD
+    vida_texto.text = f"Vida: {int(jogador.vida)}"
+    item_texto.text = f"Itens: {jogador.itens_coletados}"
 
-    # Movimento do jogador
-    speed = 5 * time.dt
-    if held_keys['w']: player.position += camera.forward * speed
-    if held_keys['s']: player.position -= camera.forward * speed
-    if held_keys['a']: player.position -= camera.right * speed
-    if held_keys['d']: player.position += camera.right * speed
+    # Lógica para coletar itens
+    hit_info = jogador.intersects()
+    if hit_info.hit and hit_info.entity.name == 'item':
+        jogador.coletar_item()
+        destroy(hit_info.entity)
 
-    camera.rotation_x -= mouse.velocity[1] * 100
-    player.rotation_y += mouse.velocity[0] * 100
-
-    # Tiro
-    if held_keys['left mouse']:
-        if not hasattr(player, 'cooldown') or time.time() - player.cooldown > 0.4:
-            player.cooldown = time.time()
-            atirar()
-
-    # Movimentação dos tiros
-    for tiro in tiros[:]:
-        tiro.position += tiro.direction * 10 * time.dt
-        for inimigo in inimigos:
-            if inimigo.enabled and tiro.intersects(inimigo).hit:
-                destroy(inimigo)
-                inimigos.remove(inimigo)
-                destroy(tiro)
-                tiros.remove(tiro)
-                break
-        if distance(tiro, player) > 20:
-            destroy(tiro)
-            tiros.remove(tiro)
-
-    # Inimigos se aproximam
-    for inimigo in inimigos:
-        direcao = (player.position - inimigo.position).normalized()
-        inimigo.position += direcao * time.dt
-        if distance(inimigo, player) < 1:
-            vida -= 30 * time.dt
-            if vida <= 0:
-                vida = 0
-                game_over_text.enabled = True
-                application.pause()
-
-    # Portas se abrem
-    for porta in porta_aberta:
-        if distance(player, porta) < 2:
+    # Lógica para abrir portas
+    if jogador.itens_coletados >= 2: # Exige 2 itens para abrir a porta
+        porta = find_entity('porta')
+        if porta and distance_xz(jogador, porta) < 3:
             destroy(porta)
 
-    # Coleta de itens
-    for e in scene.entities:
-        if e.name == 'item' and distance(player, e) < 1:
-            itens_coletados += 1
-            destroy(e)
+def game_over():
+    """
+    Função chamada quando a vida do jogador chega a zero.
+    """
+    Text(text='GAME OVER', scale=5, origin=(0, 0), color=color.red)
+    destroy(jogador)
+    mouse.locked = False
+    invoke(application.quit, delay=3) # Fecha o jogo após 3 segundos
 
-    # HUD
-    vida_texto.text = f"Vida: {int(vida)}"
-    item_texto.text = f"Itens: {itens_coletados}"
-
-# === Input para sair ===
-def input(key):
-    if key == 'escape':
-        application.quit()
-
+# --- Inicia o Jogo ---
 app.run()
-wwwwwwwwww
