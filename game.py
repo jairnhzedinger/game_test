@@ -1,5 +1,7 @@
 from ursina import *
 from ursina.prefabs.first_person_controller import FirstPersonController
+import random
+import time as pytime
 
 # --- Classes do Jogo ---
 
@@ -46,6 +48,7 @@ class Jogador(FirstPersonController):
         super().__init__(**kwargs)
         self.vida = 100
         self.itens_coletados = 0
+        self.abates = 0
         self.cooldown_tiro = 0.4
         self._tempo_ultimo_tiro = 0
 
@@ -61,11 +64,14 @@ class Jogador(FirstPersonController):
     def coletar_item(self):
         self.itens_coletados += 1
 
+    def registrar_abate(self):
+        self.abates += 1
+
     def input(self, key):
         # Ação de atirar com o mouse
         if key == 'left mouse down':
-            if time.time() - self._tempo_ultimo_tiro > self.cooldown_tiro:
-                self._tempo_ultimo_tiro = time.time()
+            if pytime.time() - self._tempo_ultimo_tiro > self.cooldown_tiro:
+                self._tempo_ultimo_tiro = pytime.time()
                 Tiro(
                     position=self.world_position + Vec3(0, 1.5, 0) + self.camera_pivot.forward * 1.5,
                     rotation=self.camera_pivot.world_rotation
@@ -92,12 +98,24 @@ class Tiro(Entity):
             if isinstance(hit_info.entity, Inimigo):
                 hit_info.entity.vida -= 50 # Causa 50 de dano
                 if hit_info.entity.vida <= 0:
+                    jogador.registrar_abate()
                     destroy(hit_info.entity)
                 destroy(self) # Destrói o tiro ao atingir
 
         # Destrói o tiro se ele se afastar muito
         if distance_xz(self, jogador) > 50:
             destroy(self)
+
+class ItemCura(Entity):
+    """Item que restaura a vida do jogador ao ser coletado."""
+
+    def __init__(self, **kwargs):
+        super().__init__(model='sphere', color=color.green, scale=0.4, **kwargs)
+        self.collider = 'sphere'
+
+    def coletado(self):
+        jogador.vida = min(jogador.vida + 30, 100)
+        destroy(self)
 
 # --- Configuração Inicial do Jogo ---
 
@@ -115,8 +133,8 @@ mapa = [
     "#..............#",
     "#...*...##.....#",
     "#.......##.E...#",
-    "#..............#",
-    "####...........#",
+    "#....H.........#",
+    "####....H......#",
     "#..............#",
     "#......#####*###",
     "#..............#",
@@ -124,6 +142,7 @@ mapa = [
 ]
 
 # Geração do mundo a partir do mapa
+spawn_points = []
 for z, linha in enumerate(mapa):
     for x, char in enumerate(linha):
         pos = (x, 1, z)
@@ -133,19 +152,27 @@ for z, linha in enumerate(mapa):
             Entity(model='cube', color=color.orange, position=pos, scale=(1, 2, 1), collider='cube', name='porta')
         elif char == '*':
             Entity(model='sphere', color=color.yellow, position=(x, 1.5, z), scale=0.4, name='item', collider='sphere')
+        elif char == 'H':
+            ItemCura(position=(x, 1.5, z))
         elif char == 'E':
             Inimigo(position=(x, 1, z))
+            spawn_points.append(pos)
+        else:
+            spawn_points.append(pos)
 
 # Entidades do ambiente
 chao = Entity(model='plane', scale=(len(mapa[0]), 1, len(mapa)), texture='grass', collider='box')
 
 # Instância do jogador usando a classe
 jogador = Jogador(position=(2, 2, 2))
+ultimo_spawn = pytime.time()
+INTERVALO_SPAWN = 5
 
 # --- Interface do Usuário (HUD) ---
 
 vida_texto = Text(text=f"Vida: {int(jogador.vida)}", position=window.top_left + Vec2(0.05, -0.05), scale=1.5)
 item_texto = Text(text=f"Itens: {jogador.itens_coletados}", position=window.top_left + Vec2(0.05, -0.10), scale=1.5)
+mortes_texto = Text(text=f"Abates: {jogador.abates}", position=window.top_left + Vec2(0.05, -0.15), scale=1.5)
 mira = Entity(model='quad', parent=camera.ui, scale=0.015, color=color.white, texture='circle')
 
 # --- Funções de Lógica do Jogo ---
@@ -157,18 +184,28 @@ def update():
     # Atualiza a HUD
     vida_texto.text = f"Vida: {int(jogador.vida)}"
     item_texto.text = f"Itens: {jogador.itens_coletados}"
+    mortes_texto.text = f"Abates: {jogador.abates}"
 
     # Lógica para coletar itens
     hit_info = jogador.intersects()
-    if hit_info.hit and hit_info.entity.name == 'item':
-        jogador.coletar_item()
-        destroy(hit_info.entity)
+    if hit_info.hit:
+        if hit_info.entity.name == 'item':
+            jogador.coletar_item()
+            destroy(hit_info.entity)
+        elif isinstance(hit_info.entity, ItemCura):
+            hit_info.entity.coletado()
 
     # Lógica para abrir portas
     if jogador.itens_coletados >= 2: # Exige 2 itens para abrir a porta
         porta = find_entity('porta')
         if porta and distance_xz(jogador, porta) < 3:
             destroy(porta)
+
+    global ultimo_spawn
+    if pytime.time() - ultimo_spawn > INTERVALO_SPAWN:
+        ultimo_spawn = pytime.time()
+        pos = random.choice(spawn_points)
+        Inimigo(position=pos)
 
 def game_over():
     """
